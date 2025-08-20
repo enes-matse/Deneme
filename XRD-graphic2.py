@@ -1497,262 +1497,6 @@ class RenkDegistirici(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Ayarlar uygulanamadı:\n{e}")
 
-    # --------- Project Save/Load (resume later) ----------
-    def _collect_project_state(self):
-        """Collect full project state including all datasets' raw data so work can resume later."""
-        state = {}
-        # Style & axes
-        state["style"] = self._current_style_name()
-        # Save current mpl style (theme)
-        state["mpl_style"] = getattr(self, "current_style", self._current_style_name())
-        if hasattr(self, "ax") and self.ax is not None:
-            state["xlabel"] = self.ax.get_xlabel()
-            state["ylabel"] = self.ax.get_ylabel()
-            state["title"]  = self.ax.get_title()
-            state["xlim"]   = list(self.ax.get_xlim())
-            state["ylim"]   = list(self.ax.get_ylim())
-        # Sync input boxes for axis labels if present
-        state["xlabel_input"] = self.xlabel_input.text() if hasattr(self, "xlabel_input") else ""
-        state["ylabel_input"] = self.ylabel_input.text() if hasattr(self, "ylabel_input") else ""
-        state["grid"] = getattr(self, "_xrd_grid_state", False)
-        state["legend_location"] = getattr(self, "legend_location", "best")
-        state["legend_custom_order"] = getattr(self, "legend_custom_order", None)
-        # Datasets with full data (so we can resume without original files)
-        datasets = []
-        if hasattr(self, "xrd_datasets") and self.xrd_datasets:
-            for d in self.xrd_datasets:
-                df = d["df"]
-                datasets.append({
-                    "filename": d.get("filename"),
-                    "color": d.get("color"),
-                    "offset": d.get("offset", 0.0),
-                    "x": df.iloc[:, 0].to_list(),
-                    "y": df.iloc[:, 1].to_list()
-                })
-        else:
-            # Single df fallback if present
-            if hasattr(self, "df") and self.df is not None:
-                datasets.append({
-                    "filename": "Main",
-                    "color": "#1f77b4",
-                    "offset": 0.0,
-                    "x": self.df.iloc[:, 0].to_list(),
-                    "y": self.df.iloc[:, 1].to_list()
-                })
-        state["datasets"] = datasets
-        return state
-
-    def _apply_project_state(self, state):
-        """Apply a previously saved project state to the UI and redraw."""
-        # Style
-        style = state.get("style")
-        mpl_style = state.get("mpl_style")
-        applied_style = None
-        if mpl_style:
-            try:
-                plt.style.use(mpl_style)
-                applied_style = mpl_style
-                self.current_style = mpl_style
-                if hasattr(self, "theme_combo"):
-                    self.theme_combo.setCurrentText(mpl_style)
-            except Exception:
-                pass
-        elif style:
-            try:
-                plt.style.use(style)
-                applied_style = style
-                self.current_style = style
-                if hasattr(self, "theme_combo"):
-                    self.theme_combo.setCurrentText(style)
-            except Exception:
-                pass
-        # Rebuild datasets from saved raw data
-        self.xrd_datasets = []
-        for d in state.get("datasets", []):
-            x = pd.Series(d.get("x", []))
-            y = pd.Series(d.get("y", []))
-            df = pd.DataFrame({0: x, 1: y})
-            self.xrd_datasets.append({
-                "filename": d.get("filename", "Dataset"),
-                "df": df,
-                "offset": d.get("offset", 0.0),
-                "color": d.get("color", "#1f77b4"),
-                "orig_df": df.copy()
-            })
-        # Axes & grid
-        if hasattr(self, "ax") and self.ax is not None:
-            if "xlabel" in state:
-                self.ax.set_xlabel(state["xlabel"], fontproperties=big_caslon_font)
-            if "ylabel" in state:
-                self.ax.set_ylabel(state["ylabel"], fontproperties=big_caslon_font)
-            if "title"  in state:
-                self.ax.set_title(state["title"], fontproperties=big_caslon_font)
-            if "xlim"   in state: self.ax.set_xlim(*state["xlim"])
-            if "ylim"   in state: self.ax.set_ylim(*state["ylim"])
-        # ---- Rebuild dataset control rows so ALL datasets appear ----
-        if hasattr(self, "control_panel_layout"):
-            # clear existing rows
-            if hasattr(self, "control_rows") and self.control_rows:
-                for row in self.control_rows:
-                    # remove widgets from layout safely
-                    for w in ["label", "spin", "color_btn", "update_btn"]:
-                        widget = row.get(w)
-                        if widget is not None:
-                            widget.setParent(None)
-                self.control_rows.clear()
-            # remove all sub-layouts
-            while self.control_panel_layout.count():
-                item = self.control_panel_layout.takeAt(0)
-                subw = item.widget()
-                if subw:
-                    subw.setParent(None)
-                sublayout = item.layout()
-                if sublayout:
-                    while sublayout.count():
-                        sublayout.takeAt(0)
-            # add rows for each dataset
-            for d in self.xrd_datasets:
-                self.add_control_row(d.get("filename", "Dataset"),
-                                     d.get("offset", 0.0),
-                                     d.get("color", "#1f77b4"))
-        # ---- Sync input boxes from state (if present), else from axes ----
-        if hasattr(self, "ax") and self.ax is not None:
-            if hasattr(self, "xlabel_input"):
-                self.xlabel_input.setText(state.get("xlabel_input", self.ax.get_xlabel()))
-            if hasattr(self, "ylabel_input"):
-                self.ylabel_input.setText(state.get("ylabel_input", self.ax.get_ylabel()))
-        self._xrd_grid_state = bool(state.get("grid", False))
-        if hasattr(self, "ax") and self.ax is not None:
-            self.ax.grid(self._xrd_grid_state)
-        # Legend prefs
-        self.legend_location = state.get("legend_location", getattr(self, "legend_location", "best"))
-        self.legend_custom_order = state.get("legend_custom_order", None)
-        # Redraw
-        self.redraw_plot()
-        self.update_legend()
-        if hasattr(self, "canvas"):
-            self.canvas.draw()
-
-    def save_project(self):
-        """Save full project (datasets + settings) to a .xrdproj JSON file."""
-        fname, _ = QFileDialog.getSaveFileName(self, "Projeyi Kaydet", "", "XRD Project (*.xrdproj)")
-        if not fname:
-            return
-        project_data = self._collect_project_state()
-        # Save current mpl style
-        project_data["mpl_style"] = getattr(self, "current_style", self._current_style_name())
-        # Save axis limits explicitly
-        if hasattr(self, "ax") and self.ax is not None:
-            project_data["xlim"] = list(self.ax.get_xlim())
-            project_data["ylim"] = list(self.ax.get_ylim())
-        # Save rcParams
-        project_data["rcParams"] = dict(plt.rcParams)
-        # Save axes and legend info
-        if hasattr(self, "ax") and self.ax is not None:
-            project_data["axes"] = {
-                "xlim": self.ax.get_xlim(),
-                "ylim": self.ax.get_ylim(),
-                "grid": self.ax.xaxis.get_gridlines()[0].get_visible() if self.ax.xaxis.get_gridlines() else False,
-                "lines": [
-                    {
-                        "color": line.get_color(),
-                        "linewidth": line.get_linewidth(),
-                        "linestyle": line.get_linestyle(),
-                        "label": line.get_label()
-                    }
-                    for line in self.ax.get_lines()
-                ],
-                "legend": {}
-            }
-            leg = self.ax.get_legend()
-            if leg:
-                project_data["axes"]["legend"] = {
-                    "loc": leg._loc,
-                    "fontsize": leg.get_texts()[0].get_fontsize() if leg.get_texts() else None,
-                    "frameon": leg.get_frame_on()
-                }
-        # Save font settings if available
-        if hasattr(self, "font_combo") and hasattr(self, "font_size_input"):
-            project_data["font"] = self.font_combo.currentText()
-            try:
-                project_data["font_size"] = float(self.font_size_input.text())
-            except Exception:
-                project_data["font_size"] = 12
-        try:
-            with open(fname, "w", encoding="utf-8") as f:
-                json.dump(project_data, f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, "Bilgi", "Proje kaydedildi.")
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Proje kaydedilemedi:\n{e}")
-
-    def load_project(self):
-        """Load a full project from a .xrdproj file and restore graph/UI."""
-        fname, _ = QFileDialog.getOpenFileName(self, "Projeyi Aç", "", "XRD Project (*.xrdproj)")
-        if not fname:
-            return
-        try:
-            with open(fname, "r", encoding="utf-8") as f:
-                project_data = json.load(f)
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Proje dosyası açılamadı:\n{e}")
-            return
-        try:
-            # Ensure canvas/axes exist (in case called too early)
-            if not hasattr(self, "ax") or not hasattr(self, "canvas"):
-                self.plot_graph()
-            # Clear any stale dataset (for single-df fallback)
-            self.df = None
-            # Restore rcParams if present
-            if "rcParams" in project_data:
-                plt.rcParams.update(project_data["rcParams"])
-            # Restore axes and legend info
-            if "axes" in project_data:
-                axdata = project_data["axes"]
-                if "xlim" in axdata: self.ax.set_xlim(axdata["xlim"])
-                if "ylim" in axdata: self.ax.set_ylim(axdata["ylim"])
-                if "grid" in axdata: self.ax.grid(axdata["grid"])
-                if "lines" in axdata:
-                    self.ax.clear()
-                    for linedata in axdata["lines"]:
-                        self.ax.plot(
-                            [], [],
-                            color=linedata.get("color", "black"),
-                            linewidth=linedata.get("linewidth", 1.0),
-                            linestyle=linedata.get("linestyle", "-"),
-                            label=linedata.get("label", "")
-                        )
-                if "legend" in axdata and axdata["legend"]:
-                    self.ax.legend(
-                        loc=axdata["legend"].get("loc", "best"),
-                        fontsize=axdata["legend"].get("fontsize", None),
-                        frameon=axdata["legend"].get("frameon", True)
-                    )
-            # Restore font settings if present
-            if "font" in project_data and "font_size" in project_data:
-                self.apply_font_settings(project_data["font"], project_data["font_size"])
-            # Restore theme/style if present
-            if "mpl_style" in project_data:
-                try:
-                    plt.style.use(project_data["mpl_style"])
-                    self.current_style = project_data["mpl_style"]
-                    if hasattr(self, "theme_combo"):
-                        self.theme_combo.setCurrentText(project_data["mpl_style"])
-                except Exception:
-                    pass
-            # Restore axis limits if present
-            if hasattr(self, "ax") and self.ax is not None:
-                if "xlim" in project_data:
-                    self.ax.set_xlim(project_data["xlim"])
-                if "ylim" in project_data:
-                    self.ax.set_ylim(project_data["ylim"])
-            self._apply_project_state(project_data)
-            # Redraw to ensure font, limits, and style restored
-            if hasattr(self, "canvas"):
-                self.canvas.draw()
-            QMessageBox.information(self, "Bilgi", "Proje yüklendi.")
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Proje uygulanamadı:\n{e}")
-
     def apply_font_settings(self, font_name, font_size):
         """Apply font settings to axes labels and title."""
         if hasattr(self, "ax") and self.ax is not None:
@@ -2935,6 +2679,24 @@ if __name__ == "__main__":
         state = {}
         # Style & axes
         state["style"] = self._current_style_name()
+        state["mpl_style"] = getattr(self, "current_style", self._current_style_name())
+        # Font settings
+        if hasattr(self, "font_combo"):
+            state["font"] = self.font_combo.currentText()
+        if hasattr(self, "font_size_input"):
+            try:
+                state["font_size"] = float(self.font_size_input.text())
+            except Exception:
+                state["font_size"] = None
+        # rcParams (make JSON-serializable)
+        rc_serializable = {}
+        for k, v in plt.rcParams.items():
+            try:
+                json.dumps(v)
+                rc_serializable[k] = v
+            except TypeError:
+                rc_serializable[k] = str(v)
+        state["rcParams"] = rc_serializable
         if hasattr(self, "ax") and self.ax is not None:
             state["xlabel"] = self.ax.get_xlabel()
             state["ylabel"] = self.ax.get_ylabel()
@@ -2970,13 +2732,16 @@ if __name__ == "__main__":
         return state
 
     def _apply_project_state(self, state):
-        # Style
-        style = state.get("style")
-        if style:
+        # Style and rcParams
+        rc_params = state.get("rcParams")
+        if rc_params:
+            plt.rcParams.update(rc_params)
+        mpl_style = state.get("mpl_style") or state.get("style")
+        if mpl_style:
             try:
-                plt.style.use(style)
+                plt.style.use(mpl_style)
                 if hasattr(self, "theme_combo"):
-                    self.theme_combo.setCurrentText(style)
+                    self.theme_combo.setCurrentText(mpl_style)
             except Exception:
                 pass
         # Build datasets from saved data
@@ -2995,16 +2760,25 @@ if __name__ == "__main__":
                 "color": d.get("color", "#1f77b4"),
                 "orig_df": df.copy()
             })
-        # Apply axes and grid
+        # Apply axes, grid, and fonts
         if hasattr(self, "ax") and self.ax is not None:
-            if "xlabel" in state: self.ax.set_xlabel(state["xlabel"])
-            if "ylabel" in state: self.ax.set_ylabel(state["ylabel"])
-            if "title"  in state: self.ax.set_title(state["title"])
-            if "xlim"   in state: self.ax.set_xlim(*state["xlim"])
-            if "ylim"   in state: self.ax.set_ylim(*state["ylim"])
+            if "xlabel" in state:
+                self.ax.set_xlabel(state["xlabel"])
+            if "ylabel" in state:
+                self.ax.set_ylabel(state["ylabel"])
+            if "title"  in state:
+                self.ax.set_title(state["title"])
+            if "xlim"   in state:
+                self.ax.set_xlim(*state["xlim"])
+            if "ylim"   in state:
+                self.ax.set_ylim(*state["ylim"])
         self._xrd_grid_state = bool(state.get("grid", False))
         if hasattr(self, "ax") and self.ax is not None:
             self.ax.grid(self._xrd_grid_state)
+        font = state.get("font")
+        font_size = state.get("font_size")
+        if font and font_size:
+            self.apply_font_settings(font, font_size)
         # Legend prefs
         self.legend_location = state.get("legend_location", getattr(self, "legend_location", "best"))
         self.legend_custom_order = state.get("legend_custom_order", None)
@@ -3018,8 +2792,8 @@ if __name__ == "__main__":
             return
         state = self._collect_project_state()
         try:
-            with open(fname, "w") as f:
-                json.dump(state, f)
+            with open(fname, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "Bilgi", "Proje kaydedildi.")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Proje kaydedilemedi:\n{e}")
@@ -3029,7 +2803,7 @@ if __name__ == "__main__":
         if not fname:
             return
         try:
-            with open(fname, "r") as f:
+            with open(fname, "r", encoding="utf-8") as f:
                 state = json.load(f)
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Proje dosyası açılamadı:\n{e}")
