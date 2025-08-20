@@ -1497,262 +1497,6 @@ class RenkDegistirici(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Ayarlar uygulanamadı:\n{e}")
 
-    # --------- Project Save/Load (resume later) ----------
-    def _collect_project_state(self):
-        """Collect full project state including all datasets' raw data so work can resume later."""
-        state = {}
-        # Style & axes
-        state["style"] = self._current_style_name()
-        # Save current mpl style (theme)
-        state["mpl_style"] = getattr(self, "current_style", self._current_style_name())
-        if hasattr(self, "ax") and self.ax is not None:
-            state["xlabel"] = self.ax.get_xlabel()
-            state["ylabel"] = self.ax.get_ylabel()
-            state["title"]  = self.ax.get_title()
-            state["xlim"]   = list(self.ax.get_xlim())
-            state["ylim"]   = list(self.ax.get_ylim())
-        # Sync input boxes for axis labels if present
-        state["xlabel_input"] = self.xlabel_input.text() if hasattr(self, "xlabel_input") else ""
-        state["ylabel_input"] = self.ylabel_input.text() if hasattr(self, "ylabel_input") else ""
-        state["grid"] = getattr(self, "_xrd_grid_state", False)
-        state["legend_location"] = getattr(self, "legend_location", "best")
-        state["legend_custom_order"] = getattr(self, "legend_custom_order", None)
-        # Datasets with full data (so we can resume without original files)
-        datasets = []
-        if hasattr(self, "xrd_datasets") and self.xrd_datasets:
-            for d in self.xrd_datasets:
-                df = d["df"]
-                datasets.append({
-                    "filename": d.get("filename"),
-                    "color": d.get("color"),
-                    "offset": d.get("offset", 0.0),
-                    "x": df.iloc[:, 0].to_list(),
-                    "y": df.iloc[:, 1].to_list()
-                })
-        else:
-            # Single df fallback if present
-            if hasattr(self, "df") and self.df is not None:
-                datasets.append({
-                    "filename": "Main",
-                    "color": "#1f77b4",
-                    "offset": 0.0,
-                    "x": self.df.iloc[:, 0].to_list(),
-                    "y": self.df.iloc[:, 1].to_list()
-                })
-        state["datasets"] = datasets
-        return state
-
-    def _apply_project_state(self, state):
-        """Apply a previously saved project state to the UI and redraw."""
-        # Style
-        style = state.get("style")
-        mpl_style = state.get("mpl_style")
-        applied_style = None
-        if mpl_style:
-            try:
-                plt.style.use(mpl_style)
-                applied_style = mpl_style
-                self.current_style = mpl_style
-                if hasattr(self, "theme_combo"):
-                    self.theme_combo.setCurrentText(mpl_style)
-            except Exception:
-                pass
-        elif style:
-            try:
-                plt.style.use(style)
-                applied_style = style
-                self.current_style = style
-                if hasattr(self, "theme_combo"):
-                    self.theme_combo.setCurrentText(style)
-            except Exception:
-                pass
-        # Rebuild datasets from saved raw data
-        self.xrd_datasets = []
-        for d in state.get("datasets", []):
-            x = pd.Series(d.get("x", []))
-            y = pd.Series(d.get("y", []))
-            df = pd.DataFrame({0: x, 1: y})
-            self.xrd_datasets.append({
-                "filename": d.get("filename", "Dataset"),
-                "df": df,
-                "offset": d.get("offset", 0.0),
-                "color": d.get("color", "#1f77b4"),
-                "orig_df": df.copy()
-            })
-        # Axes & grid
-        if hasattr(self, "ax") and self.ax is not None:
-            if "xlabel" in state:
-                self.ax.set_xlabel(state["xlabel"], fontproperties=big_caslon_font)
-            if "ylabel" in state:
-                self.ax.set_ylabel(state["ylabel"], fontproperties=big_caslon_font)
-            if "title"  in state:
-                self.ax.set_title(state["title"], fontproperties=big_caslon_font)
-            if "xlim"   in state: self.ax.set_xlim(*state["xlim"])
-            if "ylim"   in state: self.ax.set_ylim(*state["ylim"])
-        # ---- Rebuild dataset control rows so ALL datasets appear ----
-        if hasattr(self, "control_panel_layout"):
-            # clear existing rows
-            if hasattr(self, "control_rows") and self.control_rows:
-                for row in self.control_rows:
-                    # remove widgets from layout safely
-                    for w in ["label", "spin", "color_btn", "update_btn"]:
-                        widget = row.get(w)
-                        if widget is not None:
-                            widget.setParent(None)
-                self.control_rows.clear()
-            # remove all sub-layouts
-            while self.control_panel_layout.count():
-                item = self.control_panel_layout.takeAt(0)
-                subw = item.widget()
-                if subw:
-                    subw.setParent(None)
-                sublayout = item.layout()
-                if sublayout:
-                    while sublayout.count():
-                        sublayout.takeAt(0)
-            # add rows for each dataset
-            for d in self.xrd_datasets:
-                self.add_control_row(d.get("filename", "Dataset"),
-                                     d.get("offset", 0.0),
-                                     d.get("color", "#1f77b4"))
-        # ---- Sync input boxes from state (if present), else from axes ----
-        if hasattr(self, "ax") and self.ax is not None:
-            if hasattr(self, "xlabel_input"):
-                self.xlabel_input.setText(state.get("xlabel_input", self.ax.get_xlabel()))
-            if hasattr(self, "ylabel_input"):
-                self.ylabel_input.setText(state.get("ylabel_input", self.ax.get_ylabel()))
-        self._xrd_grid_state = bool(state.get("grid", False))
-        if hasattr(self, "ax") and self.ax is not None:
-            self.ax.grid(self._xrd_grid_state)
-        # Legend prefs
-        self.legend_location = state.get("legend_location", getattr(self, "legend_location", "best"))
-        self.legend_custom_order = state.get("legend_custom_order", None)
-        # Redraw
-        self.redraw_plot()
-        self.update_legend()
-        if hasattr(self, "canvas"):
-            self.canvas.draw()
-
-    def save_project(self):
-        """Save full project (datasets + settings) to a .xrdproj JSON file."""
-        fname, _ = QFileDialog.getSaveFileName(self, "Projeyi Kaydet", "", "XRD Project (*.xrdproj)")
-        if not fname:
-            return
-        project_data = self._collect_project_state()
-        # Save current mpl style
-        project_data["mpl_style"] = getattr(self, "current_style", self._current_style_name())
-        # Save axis limits explicitly
-        if hasattr(self, "ax") and self.ax is not None:
-            project_data["xlim"] = list(self.ax.get_xlim())
-            project_data["ylim"] = list(self.ax.get_ylim())
-        # Save rcParams
-        project_data["rcParams"] = dict(plt.rcParams)
-        # Save axes and legend info
-        if hasattr(self, "ax") and self.ax is not None:
-            project_data["axes"] = {
-                "xlim": self.ax.get_xlim(),
-                "ylim": self.ax.get_ylim(),
-                "grid": self.ax.xaxis.get_gridlines()[0].get_visible() if self.ax.xaxis.get_gridlines() else False,
-                "lines": [
-                    {
-                        "color": line.get_color(),
-                        "linewidth": line.get_linewidth(),
-                        "linestyle": line.get_linestyle(),
-                        "label": line.get_label()
-                    }
-                    for line in self.ax.get_lines()
-                ],
-                "legend": {}
-            }
-            leg = self.ax.get_legend()
-            if leg:
-                project_data["axes"]["legend"] = {
-                    "loc": leg._loc,
-                    "fontsize": leg.get_texts()[0].get_fontsize() if leg.get_texts() else None,
-                    "frameon": leg.get_frame_on()
-                }
-        # Save font settings if available
-        if hasattr(self, "font_combo") and hasattr(self, "font_size_input"):
-            project_data["font"] = self.font_combo.currentText()
-            try:
-                project_data["font_size"] = float(self.font_size_input.text())
-            except Exception:
-                project_data["font_size"] = 12
-        try:
-            with open(fname, "w", encoding="utf-8") as f:
-                json.dump(project_data, f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, "Bilgi", "Proje kaydedildi.")
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Proje kaydedilemedi:\n{e}")
-
-    def load_project(self):
-        """Load a full project from a .xrdproj file and restore graph/UI."""
-        fname, _ = QFileDialog.getOpenFileName(self, "Projeyi Aç", "", "XRD Project (*.xrdproj)")
-        if not fname:
-            return
-        try:
-            with open(fname, "r", encoding="utf-8") as f:
-                project_data = json.load(f)
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Proje dosyası açılamadı:\n{e}")
-            return
-        try:
-            # Ensure canvas/axes exist (in case called too early)
-            if not hasattr(self, "ax") or not hasattr(self, "canvas"):
-                self.plot_graph()
-            # Clear any stale dataset (for single-df fallback)
-            self.df = None
-            # Restore rcParams if present
-            if "rcParams" in project_data:
-                plt.rcParams.update(project_data["rcParams"])
-            # Restore axes and legend info
-            if "axes" in project_data:
-                axdata = project_data["axes"]
-                if "xlim" in axdata: self.ax.set_xlim(axdata["xlim"])
-                if "ylim" in axdata: self.ax.set_ylim(axdata["ylim"])
-                if "grid" in axdata: self.ax.grid(axdata["grid"])
-                if "lines" in axdata:
-                    self.ax.clear()
-                    for linedata in axdata["lines"]:
-                        self.ax.plot(
-                            [], [],
-                            color=linedata.get("color", "black"),
-                            linewidth=linedata.get("linewidth", 1.0),
-                            linestyle=linedata.get("linestyle", "-"),
-                            label=linedata.get("label", "")
-                        )
-                if "legend" in axdata and axdata["legend"]:
-                    self.ax.legend(
-                        loc=axdata["legend"].get("loc", "best"),
-                        fontsize=axdata["legend"].get("fontsize", None),
-                        frameon=axdata["legend"].get("frameon", True)
-                    )
-            # Restore font settings if present
-            if "font" in project_data and "font_size" in project_data:
-                self.apply_font_settings(project_data["font"], project_data["font_size"])
-            # Restore theme/style if present
-            if "mpl_style" in project_data:
-                try:
-                    plt.style.use(project_data["mpl_style"])
-                    self.current_style = project_data["mpl_style"]
-                    if hasattr(self, "theme_combo"):
-                        self.theme_combo.setCurrentText(project_data["mpl_style"])
-                except Exception:
-                    pass
-            # Restore axis limits if present
-            if hasattr(self, "ax") and self.ax is not None:
-                if "xlim" in project_data:
-                    self.ax.set_xlim(project_data["xlim"])
-                if "ylim" in project_data:
-                    self.ax.set_ylim(project_data["ylim"])
-            self._apply_project_state(project_data)
-            # Redraw to ensure font, limits, and style restored
-            if hasattr(self, "canvas"):
-                self.canvas.draw()
-            QMessageBox.information(self, "Bilgi", "Proje yüklendi.")
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Proje uygulanamadı:\n{e}")
-
     def apply_font_settings(self, font_name, font_size):
         """Apply font settings to axes labels and title."""
         if hasattr(self, "ax") and self.ax is not None:
@@ -2217,7 +1961,7 @@ class RenkDegistirici(QMainWindow):
         self.canvas.draw()
         self.update_legend()
 
-# --- Additional methods for RenkDegistirici ---
+    # --- Additional methods for RenkDegistirici ---
     def add_row_to_table(self):
         # Add a new row with zeros for all columns
         self.df.loc[len(self.df)] = [0] * len(self.df.columns)
@@ -2893,48 +2637,29 @@ class RenkDegistirici(QMainWindow):
         self.pins_visible = new_visible
         self.canvas.draw()
 
-# Uygulamayı başlat
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    pencere = RenkDegistirici()
-    pencere.show()
-    sys.exit(app.exec_())
-    def show_howto_dialog(self):
-        text = (
-            "XRD Arka Plan/Smoothing Kullanım Kılavuzu\n"
-            "\n"
-            "1) Veri Yükleme:\n"
-            "   - Dosya menüsünden veya üstteki 'Dosya Ekle' ile XRD verinizi (.txt) yükleyin.\n"
-            "\n"
-            "2) Ön İşleme menüsü:\n"
-            "   - Yumuşat (Savitzky–Golay): Pencere (tek sayı) ve polinom derecesi seçin.\n"
-            "     * Daha büyük pencere ⇒ daha güçlü yumuşatma (pikler fazla yuvarlanmasın diye dikkat).\n"
-            "   - Arka Plan Çıkar (ALS): λ (düzlük), p (asimetrik ağırlık) ve iterasyon girin.\n"
-            "     * λ ↑ ⇒ daha düz taban, tipik aralık 1e5–1e7.\n"
-            "     * p küçük (≈0.001–0.05) ⇒ tepe koruması artar.\n"
-            "   - Arka Plan Çıkar (Rolling Min): Pencere noktası verin, yöntem Min/Median.\n"
-            "     * Amorf/fluoresans yayılımını takip eden yumuşak taban için geniş pencere kullanın.\n"
-            "   - Arka Planı Göster/Gizle: Çıkarılan tabanı kesik gri eğri olarak aç/kapatır.\n"
-            "   - Orijinale Dön: Tüm ön işlemleri geri alır.\n"
-            "\n"
-            "3) Eksen ve Legend Ayarları:\n"
-            "   - Legends/Eksenler/Eksen Çizgileri menülerinden konum, yazı tipi, renk, kalınlık ve aralıkları ayrı ayrı ayarlayın.\n"
-            "\n"
-            "4) Dikey Çizgiler ve Grid:\n"
-            "   - Çizgi Çekme menüsünden grid’i aç/kapatın, istediğiniz 2θ konum(lar)ına dikey çizgi ekleyin (örn: 10, 27.5, 43).\n"
-            "\n"
-            "5) Tema ve Kayıt:\n"
-            "   - Üstteki Tema listesi ile matplotlib temasını değiştirin.\n"
-            "   - Kaydet ile görseli 600 dpi olarak dışa aktarın.\n"
-            "\n"
-            "İpucu: Çoklu XRD yüklüyorsanız, 'XRD Dataset Controls' panelinden her veri için ofset ve rengi güncelleyebilirsiniz."
-        )
-        QMessageBox.information(self, "Nasıl Kullanılır?", text)
-    # --------- Project Save/Load (resume later) ----------
+    # --------- Project Save/Load utilities ----------
     def _collect_project_state(self):
         state = {}
         # Style & axes
         state["style"] = self._current_style_name()
+        state["mpl_style"] = getattr(self, "current_style", self._current_style_name())
+        # Font settings
+        if hasattr(self, "font_combo"):
+            state["font"] = self.font_combo.currentText()
+        if hasattr(self, "font_size_input"):
+            try:
+                state["font_size"] = float(self.font_size_input.text())
+            except Exception:
+                state["font_size"] = None
+        # rcParams (make JSON-serializable)
+        rc_serializable = {}
+        for k, v in plt.rcParams.items():
+            try:
+                json.dumps(v)
+                rc_serializable[k] = v
+            except TypeError:
+                rc_serializable[k] = str(v)
+        state["rcParams"] = rc_serializable
         if hasattr(self, "ax") and self.ax is not None:
             state["xlabel"] = self.ax.get_xlabel()
             state["ylabel"] = self.ax.get_ylabel()
@@ -2970,13 +2695,16 @@ if __name__ == "__main__":
         return state
 
     def _apply_project_state(self, state):
-        # Style
-        style = state.get("style")
-        if style:
+        # Style and rcParams
+        rc_params = state.get("rcParams")
+        if rc_params:
+            plt.rcParams.update(rc_params)
+        mpl_style = state.get("mpl_style") or state.get("style")
+        if mpl_style:
             try:
-                plt.style.use(style)
+                plt.style.use(mpl_style)
                 if hasattr(self, "theme_combo"):
-                    self.theme_combo.setCurrentText(style)
+                    self.theme_combo.setCurrentText(mpl_style)
             except Exception:
                 pass
         # Build datasets from saved data
@@ -2984,27 +2712,36 @@ if __name__ == "__main__":
         for d in state.get("datasets", []):
             x = pd.Series(d.get("x", []))
             y = pd.Series(d.get("y", []))
-            df = pd.DataFrame({ "x": x, "y": y })
+            df = pd.DataFrame({"x": x, "y": y})
             # Ensure two unnamed columns for consistency with the rest of the code
-            df = df[[ "x", "y" ]]
+            df = df[["x", "y"]]
             df.columns = [0, 1]
             self.xrd_datasets.append({
                 "filename": d.get("filename", "Dataset"),
                 "df": df,
                 "offset": d.get("offset", 0.0),
                 "color": d.get("color", "#1f77b4"),
-                "orig_df": df.copy()
+                "orig_df": df.copy(),
             })
-        # Apply axes and grid
+        # Apply axes, grid, and fonts
         if hasattr(self, "ax") and self.ax is not None:
-            if "xlabel" in state: self.ax.set_xlabel(state["xlabel"])
-            if "ylabel" in state: self.ax.set_ylabel(state["ylabel"])
-            if "title"  in state: self.ax.set_title(state["title"])
-            if "xlim"   in state: self.ax.set_xlim(*state["xlim"])
-            if "ylim"   in state: self.ax.set_ylim(*state["ylim"])
+            if "xlabel" in state:
+                self.ax.set_xlabel(state["xlabel"])
+            if "ylabel" in state:
+                self.ax.set_ylabel(state["ylabel"])
+            if "title"  in state:
+                self.ax.set_title(state["title"])
+            if "xlim"   in state:
+                self.ax.set_xlim(*state["xlim"])
+            if "ylim"   in state:
+                self.ax.set_ylim(*state["ylim"])
         self._xrd_grid_state = bool(state.get("grid", False))
         if hasattr(self, "ax") and self.ax is not None:
             self.ax.grid(self._xrd_grid_state)
+        font = state.get("font")
+        font_size = state.get("font_size")
+        if font and font_size:
+            self.apply_font_settings(font, font_size)
         # Legend prefs
         self.legend_location = state.get("legend_location", getattr(self, "legend_location", "best"))
         self.legend_custom_order = state.get("legend_custom_order", None)
@@ -3018,8 +2755,8 @@ if __name__ == "__main__":
             return
         state = self._collect_project_state()
         try:
-            with open(fname, "w") as f:
-                json.dump(state, f)
+            with open(fname, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "Bilgi", "Proje kaydedildi.")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Proje kaydedilemedi:\n{e}")
@@ -3029,7 +2766,7 @@ if __name__ == "__main__":
         if not fname:
             return
         try:
-            with open(fname, "r") as f:
+            with open(fname, "r", encoding="utf-8") as f:
                 state = json.load(f)
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Proje dosyası açılamadı:\n{e}")
@@ -3043,358 +2780,9 @@ if __name__ == "__main__":
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Proje uygulanamadı:\n{e}")
 
-    # --------- Data table editor for all XRD datasets ----------
-    def open_xrd_data_table(self):
-        """Open a dialog with a tab for each dataset; allow in-place editing of x/y and apply."""
-        if (not hasattr(self, "xrd_datasets") or not self.xrd_datasets) and (not hasattr(self, "df") or self.df is None):
-            QMessageBox.warning(self, "Uyarı", "Önce en az bir XRD verisi yükleyin.")
-            return
-
-        self.data_dialog = QDialog(self)
-        self.data_dialog.setWindowTitle("XRD Veri Tablosu")
-        vbox = QVBoxLayout(self.data_dialog)
-        self.tabs = QTabWidget(self.data_dialog)
-
-        self._table_widgets = []
-
-        if hasattr(self, "xrd_datasets") and self.xrd_datasets:
-            for d in self.xrd_datasets:
-                tab = QWidget()
-                layout = QVBoxLayout(tab)
-                table = QTableWidget()
-                df = d["df"]
-                table.setRowCount(len(df))
-                table.setColumnCount(2)
-                table.setHorizontalHeaderLabels(["X", "Y"])
-                for i in range(len(df)):
-                    table.setItem(i, 0, QTableWidgetItem(str(df.iloc[i, 0])))
-                    table.setItem(i, 1, QTableWidgetItem(str(df.iloc[i, 1])))
-                layout.addWidget(table)
-                self.tabs.addTab(tab, d.get("filename", "Dataset"))
-                self._table_widgets.append(table)
-        else:
-            # single df fallback
-            tab = QWidget()
-            layout = QVBoxLayout(tab)
-            table = QTableWidget()
-            df = self.df
-            table.setRowCount(len(df))
-            table.setColumnCount(2)
-            table.setHorizontalHeaderLabels(["X", "Y"])
-            for i in range(len(df)):
-                table.setItem(i, 0, QTableWidgetItem(str(df.iloc[i, 0])))
-                table.setItem(i, 1, QTableWidgetItem(str(df.iloc[i, 1])))
-            layout.addWidget(table)
-            self.tabs.addTab(tab, "Main")
-            self._table_widgets.append(table)
-
-        vbox.addWidget(self.tabs)
-        btn_apply = QPushButton("Uygula")
-        btn_cancel = QPushButton("Kapat")
-        h = QHBoxLayout()
-        h.addStretch()
-        h.addWidget(btn_apply)
-        h.addWidget(btn_cancel)
-        vbox.addLayout(h)
-
-        btn_apply.clicked.connect(self.apply_xrd_table_changes)
-        btn_cancel.clicked.connect(self.data_dialog.close)
-
-        self.data_dialog.resize(800, 600)
-        self.data_dialog.exec_()
-
-    def apply_xrd_table_changes(self):
-        """Read edited tables and push back to dataframes, then redraw."""
-        if hasattr(self, "xrd_datasets") and self.xrd_datasets:
-            for d, table in zip(self.xrd_datasets, self._table_widgets):
-                n = table.rowCount()
-                xs = []
-                ys = []
-                for i in range(n):
-                    xv = table.item(i, 0).text() if table.item(i, 0) else "0"
-                    yv = table.item(i, 1).text() if table.item(i, 1) else "0"
-                    try:
-                        xs.append(float(xv))
-                    except Exception:
-                        xs.append(np.nan)
-                    try:
-                        ys.append(float(yv))
-                    except Exception:
-                        ys.append(np.nan)
-                df = pd.DataFrame({0: xs, 1: ys})
-                d["df"] = df
-        else:
-            # single df fallback
-            table = self._table_widgets[0]
-            n = table.rowCount()
-            xs = []
-            ys = []
-            for i in range(n):
-                xv = table.item(i, 0).text() if table.item(i, 0) else "0"
-                yv = table.item(i, 1).text() if table.item(i, 1) else "0"
-                try:
-                    xs.append(float(xv))
-                except Exception:
-                    xs.append(np.nan)
-                try:
-                    ys.append(float(yv))
-                except Exception:
-                    ys.append(np.nan)
-            self.df = pd.DataFrame({0: xs, 1: ys})
-
-        # Redraw plot with new data
-        if hasattr(self, "xrd_datasets") and self.xrd_datasets:
-            self.redraw_plot()
-        else:
-            self.update_graph_from_df()
-
-        if hasattr(self, "data_dialog"):
-            self.data_dialog.close()
-    def open_xrd_data_table_entry(self):
-        """
-        Safe entry point for menu action. Calls open_xrd_data_table if present,
-        otherwise uses a minimal fallback editor so the menu never breaks.
-        """
-        if hasattr(self, "open_xrd_data_table"):
-            try:
-                return self.open_xrd_data_table()
-            except Exception as e:
-                QMessageBox.critical(self, "Hata", f"Veri tablosu açılamadı:\n{e}")
-                return
-
-        # ---- Fallback minimal editor (single active df) ----
-        if not hasattr(self, "df") or self.df is None:
-            QMessageBox.warning(self, "Uyarı", "Önce en az bir XRD verisi yükleyin.")
-            return
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("XRD Veri Tablosu (Fallback)")
-        vbox = QVBoxLayout(dlg)
-        table = QTableWidget()
-        table.setRowCount(len(self.df))
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["X", "Y"])
-        for i in range(len(self.df)):
-            table.setItem(i, 0, QTableWidgetItem(str(self.df.iloc[i, 0])))
-            table.setItem(i, 1, QTableWidgetItem(str(self.df.iloc[i, 1])))
-        vbox.addWidget(table)
-        h = QHBoxLayout()
-        btn_apply = QPushButton("Uygula")
-        btn_close = QPushButton("Kapat")
-        h.addStretch()
-        h.addWidget(btn_apply)
-        h.addWidget(btn_close)
-        vbox.addLayout(h)
-
-        def apply_changes():
-            n = table.rowCount()
-            xs, ys = [], []
-            for i in range(n):
-                xv = table.item(i, 0).text() if table.item(i, 0) else "0"
-                yv = table.item(i, 1).text() if table.item(i, 1) else "0"
-                try:
-                    xs.append(float(xv))
-                except Exception:
-                    xs.append(np.nan)
-                try:
-                    ys.append(float(yv))
-                except Exception:
-                    ys.append(np.nan)
-            self.df = pd.DataFrame({0: xs, 1: ys})
-            self.update_graph_from_df()
-            dlg.close()
-
-        btn_apply.clicked.connect(apply_changes)
-        btn_close.clicked.connect(dlg.close)
-        dlg.resize(800, 600)
-        dlg.exec_()
-    def apply_publication_theme(self):
-        """Uygulamaya tek tıkla makale (publication) tarzı sade stil uygular."""
-        try:
-            plt.style.use('default')
-            if hasattr(self, "theme_combo"):
-                # varsa comboda da göster
-                self.theme_combo.setCurrentText('default')
-        except Exception:
-            pass
-
-        if hasattr(self, "figure") and self.figure is not None:
-            self.figure.patch.set_facecolor('white')
-        if not hasattr(self, "ax") or self.ax is None:
-            return
-
-        ax = self.ax
-        # Arkaplan beyaz
-        ax.set_facecolor('white')
-        # Dört kenarda siyah çerçeve
-        for side in ['bottom', 'top', 'left', 'right']:
-            ax.spines[side].set_visible(True)
-            ax.spines[side].set_color('black')
-            ax.spines[side].set_linewidth(1.0)
-        # Ticker: içeri bakan, iki tarafta majör/minör
-        ax.tick_params(axis='both', which='both', direction='in', colors='black', top=True, right=True, width=1)
-        ax.minorticks_on()
-        ax.tick_params(which='major', length=6)
-        ax.tick_params(which='minor', length=3)
-        # Grid kapalı
-        ax.grid(False)
-        # Eksen yazıları siyah
-        ax.xaxis.label.set_color('black')
-        ax.yaxis.label.set_color('black')
-        if hasattr(self, "canvas"):
-            self.canvas.draw()
-
-    # Basit sarmalayıcılar: mevcut "Ayarları Kaydet/Yükle" fonksiyonlarını tema için de kullan
-    def save_xrd_theme(self):
-        """Mevcut görünümü tema gibi JSON'a kaydeder (Ayarları Kaydet ile aynı içerik)."""
-        self.save_xrd_settings()
-
-    def load_xrd_theme(self):
-        """JSON'dan görünümü geri yükler (Ayarları Yükle ile aynı içerik)."""
-        self.load_xrd_settings()
-    def open_manual_data_dialog(self):
-        """
-        Kullanıcının elle X ve Y değerleri girerek yeni bir XRD dataset oluşturmasını sağlar.
-        - Dosya adı (etiket) girişi
-        - Offset girişi
-        - Renk seçimi
-        - X/Y tablosu (satır ekle/sil)
-        """
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Manuel XRD Veri Ekle")
-        vbox = QVBoxLayout(dlg)
-
-        # Üst form: isim, offset, renk
-        form = QHBoxLayout()
-        lbl_name = QLabel("İsim:")
-        name_edit = QLineEdit()
-        name_edit.setPlaceholderText("Örn: Manuel-XRD-1")
-        form.addWidget(lbl_name)
-        form.addWidget(name_edit)
-
-        lbl_offset = QLabel("Offset:")
-        offset_edit = QLineEdit("0.0")
-        offset_edit.setFixedWidth(80)
-        form.addWidget(lbl_offset)
-        form.addWidget(offset_edit)
-
-        lbl_color = QLabel("Renk:")
-        color_btn = QPushButton("Seç")
-        chosen_color = {"val": "#1f77b4"}
-        def pick_color():
-            c = QColorDialog.getColor()
-            if c.isValid():
-                chosen_color["val"] = c.name()
-                color_btn.setStyleSheet(f"background-color: {c.name()}")
-        color_btn.clicked.connect(pick_color)
-        form.addWidget(lbl_color)
-        form.addWidget(color_btn)
-        form.addStretch()
-        vbox.addLayout(form)
-
-        # Veri tablosu
-        table = QTableWidget()
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["X", "Y"])
-        table.setRowCount(50)  # başlangıç için 50 boş satır
-        vbox.addWidget(table)
-
-        # Alt butonlar
-        h = QHBoxLayout()
-        btn_add_row = QPushButton("Satır Ekle")
-        btn_insert_row = QPushButton("Seçili Üstüne Ekle")
-        btn_del_rows = QPushButton("Seçili Satır(ları) Sil")
-        btn_apply = QPushButton("Uygula")
-        btn_close = QPushButton("Kapat")
-        h.addStretch()
-        h.addWidget(btn_add_row)
-        h.addWidget(btn_insert_row)
-        h.addWidget(btn_del_rows)
-        h.addWidget(btn_apply)
-        h.addWidget(btn_close)
-        vbox.addLayout(h)
-
-        def add_row():
-            r = table.rowCount()
-            table.insertRow(r)
-            table.setItem(r, 0, QTableWidgetItem(""))
-            table.setItem(r, 1, QTableWidgetItem(""))
-
-        def insert_row_above():
-            sel = table.selectionModel().selectedRows()
-            if not sel:
-                add_row()
-                return
-            r0 = min(idx.row() for idx in sel)
-            table.insertRow(r0)
-            table.setItem(r0, 0, QTableWidgetItem(""))
-            table.setItem(r0, 1, QTableWidgetItem(""))
-
-        def delete_selected_rows():
-            sel = sorted({idx.row() for idx in table.selectionModel().selectedRows()}, reverse=True)
-            for r in sel:
-                table.removeRow(r)
-
-        def apply_manual():
-            # İsim
-            fname = name_edit.text().strip()
-            if not fname:
-                QMessageBox.warning(self, "Eksik İsim", "Lütfen yeni XRD için bir isim girin.")
-                return
-            # Offset
-            try:
-                offset_val = float(offset_edit.text().strip())
-            except Exception:
-                QMessageBox.warning(self, "Hatalı Offset", "Offset için geçerli bir sayı girin.")
-                return
-            # Veriler
-            xs, ys = [], []
-            for r in range(table.rowCount()):
-                itemx = table.item(r, 0)
-                itemy = table.item(r, 1)
-                if itemx is None and itemy is None:
-                    continue
-                sx = (itemx.text().strip() if itemx else "")
-                sy = (itemy.text().strip() if itemy else "")
-                if sx == "" and sy == "":
-                    continue
-                try:
-                    xval = float(sx)
-                    yval = float(sy)
-                except Exception:
-                    QMessageBox.warning(self, "Geçersiz Hücre", f"{r+1}. satırda sayı olmayan değer var.")
-                    return
-                xs.append(xval)
-                ys.append(yval)
-            if len(xs) < 2:
-                QMessageBox.warning(self, "Yetersiz Veri", "En az iki nokta girin.")
-                return
-
-            # DataFrame oluştur ve ekle
-            df_new = pd.DataFrame({0: xs, 1: ys})
-            # xrd_datasets içine ekle (renk ve offset ile)
-            if not hasattr(self, "xrd_datasets"):
-                self.xrd_datasets = []
-            self.xrd_datasets.append({
-                "filename": fname,
-                "df": df_new,
-                "offset": offset_val,
-                "color": chosen_color["val"],
-                "orig_df": df_new.copy()
-            })
-            # Kontrol paneline satır ekle
-            if hasattr(self, "add_control_row"):
-                self.add_control_row(fname, offset_val, chosen_color["val"])
-            # Yeniden çiz
-            self.redraw_plot()
-            QMessageBox.information(self, "Eklendi", f"'{fname}' dataset'i eklendi.")
-            dlg.close()
-
-        btn_add_row.clicked.connect(add_row)
-        btn_insert_row.clicked.connect(insert_row_above)
-        btn_del_rows.clicked.connect(delete_selected_rows)
-        btn_apply.clicked.connect(apply_manual)
-        btn_close.clicked.connect(dlg.close)
-
-        dlg.resize(900, 600)
-        dlg.exec_()
+# Uygulamayı başlat
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    pencere = RenkDegistirici()
+    pencere.show()
+    sys.exit(app.exec_())
