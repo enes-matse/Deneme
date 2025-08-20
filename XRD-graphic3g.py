@@ -4,15 +4,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import json
-# NOTE: Big Caslon is kept for historical reference; labels now use UI-selected fonts.
-# Some fonts (like Big Caslon) lack Greek glyphs (e.g., θ), which previously caused warnings.
-from matplotlib.font_manager import FontProperties
-big_caslon_path = "/System/Library/Fonts/Supplemental/BigCaslon.ttf"
-big_caslon_font = FontProperties(fname=big_caslon_path, size=40)
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QMainWindow, QPushButton, QVBoxLayout, QColorDialog, QFontDialog, QInputDialog,
     QFileDialog, QTabWidget, QHBoxLayout, QTableWidget, QTableWidgetItem, QMessageBox, QSizePolicy, QCheckBox,
-    QLineEdit, QLabel, QFontComboBox, QDoubleSpinBox, QComboBox, QScrollArea, QDialog, QStatusBar
+    QLineEdit, QLabel, QDoubleSpinBox, QComboBox, QScrollArea, QDialog, QStatusBar
 )
 
 # --- Manuel XRD veri girişi dialogu ---
@@ -641,12 +636,6 @@ class RenkDegistirici(QMainWindow):
         self.add_xrd_button = QPushButton("Veri Ekle")
         self.xlabel_input = QLineEdit("2θ (°)")
         self.ylabel_input = QLineEdit("Intensity (a.u.)")
-        # Only matplotlib-compatible fonts (DejaVu and some common ones)
-        self.fonts = ["DejaVu Sans", "DejaVu Serif", "Arial", "Times New Roman", "Courier New", "Helvetica"]
-        self.font_combo = QComboBox()
-        self.font_combo.addItems(self.fonts)
-        self.font_combo.setCurrentText("DejaVu Sans")
-        self.font_size_input = QLineEdit("12")
         self.apply_style_button = QPushButton("Stili Uygula")
         self.add_xrd_button.clicked.connect(self.open_manual_data_dialog)
         self.apply_style_button.clicked.connect(self.update_plot_style)
@@ -684,13 +673,6 @@ class RenkDegistirici(QMainWindow):
         theme, ok = QInputDialog.getItem(self, "Tema Seç", "Matplotlib Teması:", themes, editable=False)
         if ok:
             plt.style.use(theme)
-            # Re-apply UI-selected font so the theme doesn't override it
-            try:
-                fname = self.font_combo.currentText()
-                fsize = int(self.font_size_input.text())
-            except Exception:
-                fname, fsize = "DejaVu Sans", 12
-            self.apply_font_settings(fname, fsize)
             if hasattr(self, 'canvas'):
                 self.canvas.draw()
         return
@@ -768,13 +750,6 @@ class RenkDegistirici(QMainWindow):
         self.ax.set_title("XRD Pattern")
         self.ax.set_xlabel("2θ (°)")
         self.ax.set_ylabel("Intensity (a.u.)")
-        # Apply current UI font choice to avoid theme default & missing glyphs
-        try:
-            fname = self.font_combo.currentText() if hasattr(self, 'font_combo') else "DejaVu Sans"
-            fsize = int(self.font_size_input.text()) if hasattr(self, 'font_size_input') and self.font_size_input.text() else 12
-        except Exception:
-            fname, fsize = "DejaVu Sans", 12
-        self.apply_font_settings(fname, fsize)
         # Filter legend so only valid labels are shown
         handles, labels = self.ax.get_legend_handles_labels()
         handles = [h for h, l in zip(handles, labels) if l and not l.startswith("_")]
@@ -829,10 +804,6 @@ class RenkDegistirici(QMainWindow):
         xrd_control_layout.addWidget(self.xlabel_input)
         xrd_control_layout.addWidget(QLabel("Y Etiketi:"))
         xrd_control_layout.addWidget(self.ylabel_input)
-        xrd_control_layout.addWidget(QLabel("Font:"))
-        xrd_control_layout.addWidget(self.font_combo)
-        xrd_control_layout.addWidget(QLabel("Boyut:"))
-        xrd_control_layout.addWidget(self.font_size_input)
         xrd_control_layout.addWidget(self.apply_style_button)
         # Tema seçici
         xrd_control_layout.addWidget(QLabel("Tema:"))
@@ -1003,13 +974,6 @@ class RenkDegistirici(QMainWindow):
         self.ax.set_xlabel(xlabel)
         self.ax.set_ylabel(ylabel)
         self.ax.set_title(current_title)
-        try:
-            font_name = self.font_combo.currentText()
-            font_size = int(self.font_size_input.text())
-        except Exception:
-            font_name = "DejaVu Sans"
-            font_size = 12
-        self.apply_font_settings(font_name, font_size)
         # Restore axis limits if possible
         if current_xlim is not None:
             self.ax.set_xlim(current_xlim)
@@ -1036,14 +1000,6 @@ class RenkDegistirici(QMainWindow):
         self.ax.set_xlabel(xlabel)
         self.ax.set_ylabel(ylabel)
         self.ax.set_title(current_title)
-        # Apply chosen font settings
-        try:
-            font_name = self.font_combo.currentText()
-            font_size = int(self.font_size_input.text())
-        except Exception:
-            font_name = "DejaVu Sans"
-            font_size = 12
-        self.apply_font_settings(font_name, font_size)
         if hasattr(self, 'canvas'):
             self.canvas.draw()
 
@@ -1434,14 +1390,6 @@ class RenkDegistirici(QMainWindow):
                 "weight": self.ax.title.get_fontweight(),
                 "style": self.ax.title.get_fontstyle()
             }
-        # Save UI font controls explicitly as well
-        try:
-            cfg["ui_font"] = {
-                "name": self.font_combo.currentText() if hasattr(self, 'font_combo') else None,
-                "size": int(self.font_size_input.text()) if hasattr(self, 'font_size_input') and self.font_size_input.text() else None,
-            }
-        except Exception:
-            cfg["ui_font"] = {"name": None, "size": None}
         cfg["grid"] = getattr(self, "_xrd_grid_state", False)
         # legend
         cfg["legend_location"] = getattr(self, "legend_location", "best")
@@ -1519,24 +1467,6 @@ class RenkDegistirici(QMainWindow):
                         fontstyle=f.get("style", "normal"))
                 if "xlim"   in cfg: self.ax.set_xlim(*cfg["xlim"])
                 if "ylim"   in cfg: self.ax.set_ylim(*cfg["ylim"])
-            # Restore UI font if saved, otherwise derive from xlabel_font
-            ui_f = cfg.get("ui_font")
-            if ui_f and (ui_f.get("name") or ui_f.get("size") is not None):
-                fname = ui_f.get("name") or cfg.get("xlabel_font", {}).get("name", "DejaVu Sans")
-                fsize = ui_f.get("size") if ui_f.get("size") is not None else int(cfg.get("xlabel_font", {}).get("size", 12))
-            else:
-                xf = cfg.get("xlabel_font", {})
-                fname = xf.get("name", "DejaVu Sans")
-                fsize = int(xf.get("size", 12))
-            # Sync UI widgets
-            if hasattr(self, 'font_combo'):
-                idx = self.font_combo.findText(fname)
-                if idx >= 0:
-                    self.font_combo.setCurrentIndex(idx)
-            if hasattr(self, 'font_size_input'):
-                self.font_size_input.setText(str(fsize))
-            # Apply fonts to axes/ticks/legend
-            self.apply_font_settings(fname, fsize)
             # keep UI inputs in sync with current axes state
             if hasattr(self, "xlabel_input"):
                 self.xlabel_input.setText(self.ax.get_xlabel())
@@ -1566,50 +1496,6 @@ class RenkDegistirici(QMainWindow):
             QMessageBox.information(self, "Bilgi", "Ayarlar yüklendi.")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Ayarlar uygulanamadı:\n{e}")
-
-    def apply_font_settings(self, font_name, font_size):
-        """Apply font settings to axes labels, title, tick labels, and legend.
-        Also sync the UI controls to reflect the current choice.
-        """
-        if hasattr(self, "ax") and self.ax is not None:
-            # Axis labels & title
-            self.ax.xaxis.label.set_fontname(font_name)
-            self.ax.xaxis.label.set_fontsize(font_size)
-            self.ax.yaxis.label.set_fontname(font_name)
-            self.ax.yaxis.label.set_fontsize(font_size)
-            self.ax.title.set_fontname(font_name)
-            self.ax.title.set_fontsize(font_size)
-            # Tick labels (x & y)
-            try:
-                for lab in self.ax.get_xticklabels():
-                    lab.set_fontname(font_name)
-                    lab.set_fontsize(font_size)
-                for lab in self.ax.get_yticklabels():
-                    lab.set_fontname(font_name)
-                    lab.set_fontsize(font_size)
-            except Exception:
-                pass
-            # Legend texts (if any)
-            try:
-                for legend in [getattr(self, 'legend1', None), getattr(self, 'legend2', None)]:
-                    if legend:
-                        for text in legend.get_texts():
-                            text.set_fontname(font_name)
-                            text.set_fontsize(font_size)
-            except Exception:
-                pass
-        # Sync UI controls
-        if hasattr(self, "font_combo"):
-            idx = self.font_combo.findText(font_name)
-            if idx >= 0:
-                self.font_combo.setCurrentIndex(idx)
-        if hasattr(self, "font_size_input"):
-            self.font_size_input.setText(str(font_size))
-        if hasattr(self, 'canvas'):
-            try:
-                self.canvas.draw()
-            except Exception:
-                pass
 
     def open_xrd_data_table_entry(self):
         """
@@ -2741,14 +2627,6 @@ class RenkDegistirici(QMainWindow):
         # Style & axes
         state["style"] = self._current_style_name()
         state["mpl_style"] = getattr(self, "current_style", self._current_style_name())
-        # Font settings
-        if hasattr(self, "font_combo"):
-            state["font"] = self.font_combo.currentText()
-        if hasattr(self, "font_size_input"):
-            try:
-                state["font_size"] = float(self.font_size_input.text())
-            except Exception:
-                state["font_size"] = None
         # rcParams (make JSON-serializable)
         rc_serializable = {}
         for k, v in plt.rcParams.items():
@@ -2836,10 +2714,6 @@ class RenkDegistirici(QMainWindow):
         self._xrd_grid_state = bool(state.get("grid", False))
         if hasattr(self, "ax") and self.ax is not None:
             self.ax.grid(self._xrd_grid_state)
-        font = state.get("font")
-        font_size = state.get("font_size")
-        if font and font_size:
-            self.apply_font_settings(font, font_size)
         # Legend prefs
         self.legend_location = state.get("legend_location", getattr(self, "legend_location", "best"))
         self.legend_custom_order = state.get("legend_custom_order", None)
